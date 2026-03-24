@@ -3,10 +3,9 @@ import json
 import time
 import random
 import os
-import psycopg2
-from psycopg2 import extras
 from datetime import datetime
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # Load environment variables from .env file
 load_dotenv()
@@ -17,9 +16,12 @@ PAGE_SIZE = 10
 MAX_PAGES = 50
 POLL_INTERVAL = 15  # seconds
 
-# Database Configuration
-# DATABASE_URL should be set in environment variables
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:YOUR_PASSWORD@db.jjovirnswldbnfokyyuk.supabase.co:5432/postgres")
+# Supabase Configuration
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Initialize Supabase Client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -28,39 +30,6 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Origin": "https://bigmumbaiy.com",
 }
-
-def get_db_connection():
-    """Create a connection to the Supabase PostgreSQL database."""
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        return conn
-    except Exception as e:
-        print(f"[-] Error connecting to database: {e}")
-        return None
-
-def init_db():
-    """Initialize the database table if it doesn't exist."""
-    conn = get_db_connection()
-    if not conn:
-        return
-    
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS wingo_history (
-                    period_id TEXT PRIMARY KEY,
-                    result_number TEXT,
-                    size TEXT,
-                    color TEXT,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            conn.commit()
-            print("[+] Database table initialized (or already exists).")
-    except Exception as e:
-        print(f"[-] Error initializing database: {e}")
-    finally:
-        conn.close()
 
 def get_timestamp():
     """Generate a Unix timestamp in milliseconds."""
@@ -111,50 +80,31 @@ def parse_record(item):
     }
 
 def save_to_db(records):
-    """Save records to the Supabase PostgreSQL database."""
+    """Save records to Supabase via HTTP SDK."""
     if not records:
         return
-    
-    conn = get_db_connection()
-    if not conn:
-        return
 
     try:
-        with conn.cursor() as cur:
-            # Prepare records for insertion (UPSERT)
-            # period_id is the primary key, so we handle conflicts
-            insert_query = """
-                INSERT INTO wingo_history (period_id, result_number, size, color)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (period_id) DO NOTHING;
-            """
-            
-            data = [(r['period_id'], r['result_number'], r['size'], r['color']) for r in records]
-            
-            extras.execute_batch(cur, insert_query, data)
-            conn.commit()
+        # data is a list of dicts. upsert handles duplicates by period_id (if set as PK)
+        # Note: In Supabase SDK, upsert returns a response object.
+        response = supabase.table("wingo_history").upsert(records).execute()
+        if response.data:
             print(f"[+] Successfully saved/updated {len(records)} records in Supabase.")
+        else:
+            print(f"[-] Warning: No data returned from Supabase upsert.")
     except Exception as e:
-        print(f"[-] Error saving to database: {e}")
-    finally:
-        conn.close()
+        print(f"[-] Error saving to Supabase: {e}")
 
 def get_latest_period_id():
-    """Get the latest period ID stored in the database."""
-    conn = get_db_connection()
-    if not conn:
-        return None
-    
+    """Get the latest period ID stored in Supabase."""
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT period_id FROM wingo_history ORDER BY period_id DESC LIMIT 1")
-            row = cur.fetchone()
-            return row[0] if row else None
-    except Exception as e:
-        print(f"[-] Error fetching latest record: {e}")
+        response = supabase.table("wingo_history").select("period_id").order("period_id", desc=True).limit(1).execute()
+        if response.data:
+            return response.data[0]["period_id"]
         return None
-    finally:
-        conn.close()
+    except Exception as e:
+        print(f"[-] Error fetching latest record from Supabase: {e}")
+        return None
 
 def scrape_historical():
     """Initial scrape of 50 pages."""
@@ -204,8 +154,7 @@ def monitor_mode():
     """Enter real-time polling mode."""
     print(f"[*] Entering Monitor Mode. Polling every {POLL_INTERVAL} seconds...")
     
-    # Keep track of known IDs locally to avoid redundant DB calls every poll
-    # but initially seed from DB if needed.
+    # Keep track of known IDs locally
     known_latest_id = get_latest_period_id()
     print(f"[*] Starting monitor from latest known ID: {known_latest_id}")
 
@@ -248,14 +197,13 @@ def monitor_mode():
 
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("        WINGO 30S DATA COLLECTOR (SUPABASE)")
+    print("        WINGO 30S DATA COLLECTOR (SUPABASE SDK)")
     print("="*50)
     
-    # Initialize DB
-    init_db()
+    # We skip init_db() because create_table via SDK is not standard, 
+    # and the user should run the SQL setup as provided in the walkthrough.
 
-    # Initial setup (can be skipped if DB already has records)
-    # For simplicity, we run it once or check if DB is empty
+    # Initial setup
     if get_latest_period_id() is None:
         scrape_historical()
     
