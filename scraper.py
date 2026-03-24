@@ -3,6 +3,8 @@ import json
 import time
 import random
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -195,13 +197,32 @@ def monitor_mode():
             print(f"[-] Error in monitor loop: {e}")
             time.sleep(10)
 
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+    
+    def log_message(self, format, *args):
+        # Silence logs for health checks
+        return
+
+def run_health_check_server():
+    """Start a dummy web server to satisfy Render's port detection."""
+    port = int(os.getenv("PORT", 10000))
+    server_address = ("", port)
+    httpd = HTTPServer(server_address, HealthCheckHandler)
+    print(f"[*] Health check server started on port {port}")
+    httpd.serve_forever()
+
 if __name__ == "__main__":
     print("\n" + "="*50)
     print("        WINGO 30S DATA COLLECTOR (SUPABASE SDK)")
     print("="*50)
     
-    # We skip init_db() because create_table via SDK is not standard, 
-    # and the user should run the SQL setup as provided in the walkthrough.
+    # Start the health check server in a background thread
+    threading.Thread(target=run_health_check_server, daemon=True).start()
 
     # Initial setup
     if get_latest_period_id() is None:
